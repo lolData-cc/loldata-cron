@@ -1,0 +1,11 @@
+{
+  "deploy": {
+    "command": "python main.py"
+  },
+  "crons": [
+    {
+      "schedule": "*/10 * * * *",
+      "command": "python main.py"
+    }
+  ]
+}
