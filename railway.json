@@ -5,7 +5,7 @@
   "crons": [
     {
       "schedule": "*/10 * * * *",
-      "command": "python main.py"
+      "command": "python -u main.py --no-ingest --also-process-users"
     }
   ]
 }
