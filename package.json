@@ -6,7 +6,7 @@
   "scripts": {
     "nightly": "bun run src/index.ts",
     "sync-cdn": "bun run src/jobs/sync-cdn.ts",
-    "start": "python main.py --crawl-forever --seed Wasureta#EUW"
+    "start": "echo 'loldata-cron ready — crons run on schedule' && sleep infinity"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1023.0",
