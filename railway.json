@@ -1,16 +1,8 @@
 {
   "deploy": {
-    "command": "python main.py"
+    "command": "echo 'loldata-cron ready' && sleep infinity"
   },
   "crons": [
-    {
-      "schedule": "*/10 * * * *",
-      "command": "python -u main.py --no-ingest --also-process-users"
-    },
-    {
-      "schedule": "0 3 * * *",
-      "command": "bun run src/index.ts"
-    },
     {
       "schedule": "0 */4 * * *",
       "command": "bun run src/jobs/sync-cdn.ts"
