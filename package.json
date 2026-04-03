@@ -6,7 +6,7 @@
   "scripts": {
     "nightly": "bun run src/index.ts",
     "sync-cdn": "bun run src/jobs/sync-cdn.ts",
-    "start": "echo 'loldata-cron ready — crons run on schedule' && sleep infinity"
+    "start": "bun run src/jobs/sync-cdn.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1023.0",
