@@ -1,0 +1,20 @@
+{
+  "name": "loldata-cron",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "nightly": "bun run src/index.ts",
+    "sync-cdn": "bun run src/jobs/sync-cdn.ts",
+    "start": "python main.py --crawl-forever --seed Wasureta#EUW"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1023.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "tar": "^7.5.13"
+  },
+  "devDependencies": {
+    "bun-types": "^1.2.17",
+    "typescript": "~5.8.3"
+  }
+}
