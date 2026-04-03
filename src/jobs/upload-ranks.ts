@@ -9,9 +9,6 @@ import {
   R2_SECRET_ACCESS_KEY,
   R2_BUCKET_NAME,
 } from "../config";
-import { mkdir } from "fs/promises";
-import { join } from "path";
-import { tmpdir } from "os";
 
 const s3 = new S3Client({
   region: "auto",
@@ -35,9 +32,25 @@ const TIERS = [
   "challenger",
 ];
 
-// Community Dragon ranked emblem URLs
-const EMBLEM_URL = (tier: string) =>
+// Modern rank icons (current style) from CommunityDragon
+const MODERN_URL = (tier: string) =>
   `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-shared-components/global/default/images/${tier}.png`;
+
+// Legacy 2019 helmet-style rank icons from GitHub
+const LEGACY_TIER_MAP: Record<string, string> = {
+  iron: "Emblem_Iron",
+  bronze: "Emblem_Bronze",
+  silver: "Emblem_Silver",
+  gold: "Emblem_Gold",
+  platinum: "Emblem_Platinum",
+  emerald: "Emblem_Platinum", // Emerald didn't exist in 2019, use Platinum as placeholder
+  diamond: "Emblem_Diamond",
+  master: "Emblem_Master",
+  grandmaster: "Emblem_Grandmaster",
+  challenger: "Emblem_Challenger",
+};
+const LEGACY_URL = (tier: string) =>
+  `https://cdn.jsdelivr.net/gh/magisteriis/lol-icons-and-emblems/ranked-emblems/${LEGACY_TIER_MAP[tier]}.png`;
 
 async function downloadImage(url: string): Promise<Buffer> {
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
@@ -66,26 +79,41 @@ async function main() {
   const latest = versions[0];
   log.info("RANK_ICONS", `Latest patch: ${latest}`);
 
+  // ── Modern rank icons ──
+  log.info("RANK_ICONS", "=== Uploading modern rank icons ===");
   for (const tier of TIERS) {
     try {
-      const url = EMBLEM_URL(tier);
-      log.info("RANK_ICONS", `Downloading ${tier}...`);
-      const img = await downloadImage(url);
-
-      // Upload to all paths the frontend might use
+      const img = await downloadImage(MODERN_URL(tier));
       const paths = [
         `ranks/${tier}.png`,
         `img/miniranks/${tier}.png`,
         `${latest}/ranks/${tier}.png`,
         `${latest}/img/miniranks/${tier}.png`,
       ];
-      for (const p of paths) {
-        await uploadToR2(p, img);
-      }
-      log.info("RANK_ICONS", `Uploaded ${tier} (${(img.length / 1024).toFixed(0)} KB) to ${paths.length} paths`);
+      for (const p of paths) await uploadToR2(p, img);
+      log.info("RANK_ICONS", `✅ ${tier} modern (${(img.length / 1024).toFixed(0)} KB)`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error("RANK_ICONS", `Failed for ${tier}: ${msg}`);
+      log.error("RANK_ICONS", `Failed modern ${tier}: ${msg}`);
+    }
+  }
+
+  // ── Legacy 2019 helmet-style rank icons ──
+  log.info("RANK_ICONS", "=== Uploading legacy (2019 helmet) rank icons ===");
+  for (const tier of TIERS) {
+    try {
+      const img = await downloadImage(LEGACY_URL(tier));
+      const paths = [
+        `ranks-legacy/${tier}.png`,
+        `img/miniranks-legacy/${tier}.png`,
+        `${latest}/ranks-legacy/${tier}.png`,
+        `${latest}/img/miniranks-legacy/${tier}.png`,
+      ];
+      for (const p of paths) await uploadToR2(p, img);
+      log.info("RANK_ICONS", `✅ ${tier} legacy (${(img.length / 1024).toFixed(0)} KB)`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error("RANK_ICONS", `Failed legacy ${tier}: ${msg}`);
     }
   }
 
