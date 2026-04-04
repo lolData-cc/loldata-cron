@@ -54,12 +54,20 @@ async function main() {
   for (let i = 0; i < combos.length; i++) {
     const { champion_id, role } = combos[i];
     try {
-      const { rows } = await client.query(
-        "SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data",
-        [champion_id, role]
-      );
-      const data = rows[0]?.data;
+      // Fetch stats + items in parallel
+      const [statsRes, itemsRes] = await Promise.all([
+        client.query("SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data", [champion_id, role]),
+        client.query("SELECT * FROM champion_item_stats($1, $2, NULL, 12)", [champion_id, role]),
+      ]);
+      const data = statsRes.rows[0]?.data;
       if (data) {
+        data.items = itemsRes.rows.map((r: any) => ({
+          item_id: r.item_id,
+          games: Number(r.total_games),
+          wins: Number(r.wins),
+          winrate: Number(r.winrate),
+          pick_rate: Number(r.pick_rate),
+        }));
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
@@ -116,16 +124,22 @@ async function main() {
 
     log.info("CHAMP_SNAP", `Tier ${tier}: ${tierStats.length} combos computed in ${Date.now() - t0}ms`);
 
-    // Get base snapshots to merge matchup data
+    // Build tier snapshots with items
     for (const stat of tierStats) {
       try {
-        // Try to get matchup data from the base snapshot
-        const { rows: baseSnap } = await client.query(
-          `SELECT data FROM champion_stats_snapshots
-           WHERE champion_id = $1 AND role = $2 AND snapshot_date = $3 AND tier IS NULL`,
-          [stat.champion_id, stat.role, today]
-        );
-        const baseData = baseSnap[0]?.data;
+        // Get base snapshot (for matchup data) and tier-specific items in parallel
+        const [baseSnapRes, itemsRes] = await Promise.all([
+          client.query(
+            `SELECT data FROM champion_stats_snapshots
+             WHERE champion_id = $1 AND role = $2 AND snapshot_date = $3 AND tier IS NULL`,
+            [stat.champion_id, stat.role, today]
+          ),
+          client.query(
+            "SELECT * FROM champion_item_stats($1, $2, $3, 12)",
+            [stat.champion_id, stat.role, tier]
+          ),
+        ]);
+        const baseData = baseSnapRes.rows[0]?.data;
 
         const data = {
           core: {
@@ -138,13 +152,19 @@ async function main() {
             avgGold: Number(stat.avg_gold),
             avgDamage: Number(stat.avg_dmg),
           },
-          // Reuse matchup/synergy data from base snapshot (tier-specific matchups too expensive to compute live)
           bestMatchups: baseData?.bestMatchups ?? [],
           worstMatchups: baseData?.worstMatchups ?? [],
           bestSynergies: baseData?.bestSynergies ?? [],
           worstCounters: baseData?.worstCounters ?? [],
           objectiveWinrates: baseData?.objectiveWinrates ?? { firstDragon: null, firstBaron: null },
           gamePhaseWinrates: baseData?.gamePhaseWinrates ?? [],
+          items: itemsRes.rows.map((r: any) => ({
+            item_id: r.item_id,
+            games: Number(r.total_games),
+            wins: Number(r.wins),
+            winrate: Number(r.winrate),
+            pick_rate: Number(r.pick_rate),
+          })),
           meta: { queueId: 420, role: stat.role, tier, lastUpdatedUtc: new Date().toISOString() },
         };
 
