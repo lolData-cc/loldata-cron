@@ -6,6 +6,10 @@
     {
       "schedule": "0 */4 * * *",
       "command": "bun run src/jobs/sync-cdn.ts"
+    },
+    {
+      "schedule": "0 5 * * *",
+      "command": "bun run src/jobs/snapshot-champion-stats.ts"
     }
   ]
 }
