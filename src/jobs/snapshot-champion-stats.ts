@@ -1,5 +1,5 @@
 // src/jobs/snapshot-champion-stats.ts
-// Daily cron: pre-compute champion stats for each champion/role/tier combo.
+// Daily cron: pre-compute champion stats + items for each champion/role/tier combo.
 import { config } from "dotenv";
 config({ override: true });
 
@@ -28,46 +28,92 @@ async function main() {
   const client = await pool.connect();
   await client.query("SET statement_timeout = '600s'");
 
-  // Get all champion/role combos with enough games
-  const { rows: combos } = await client.query(`
-    SELECT DISTINCT champion_id, role
-    FROM participants
-    WHERE role IS NOT NULL AND role != '' AND role != 'Invalid'
-      AND champion_id IS NOT NULL
-    GROUP BY champion_id, role
-    HAVING count(*) >= 50
-    ORDER BY champion_id, role
-  `);
-
-  log.info("CHAMP_SNAP", `Found ${combos.length} champion/role combos`);
-
   const today = new Date().toISOString().slice(0, 10);
 
   // Delete today's old snapshots
   await client.query("DELETE FROM champion_stats_snapshots WHERE snapshot_date = $1", [today]);
 
+  // ── Step 1: Pre-compute ALL item data in one bulk query ──
+  log.info("CHAMP_SNAP", "Pre-computing item data for all champions...");
+  const t0 = Date.now();
+  const { rows: allItems } = await client.query(`
+    WITH all_items AS (
+      SELECT p.champion_id, p.role,
+        unnest(ARRAY[p.item0, p.item1, p.item2, p.item3, p.item4, p.item5]) AS iid,
+        p.win
+      FROM participants p
+      WHERE p.role IS NOT NULL AND p.role != '' AND p.role != 'Invalid'
+    ),
+    counts AS (
+      SELECT p.champion_id, p.role, count(*) AS total
+      FROM participants p
+      WHERE p.role IS NOT NULL AND p.role != '' AND p.role != 'Invalid'
+      GROUP BY p.champion_id, p.role
+    ),
+    legendary AS (
+      SELECT ai.champion_id, ai.role, ai.iid AS item_id, ai.win
+      FROM all_items ai
+      JOIN items i ON i.item_id = ai.iid
+      WHERE i.is_legendary = true
+    )
+    SELECT l.champion_id, l.role, l.item_id,
+      count(*)::int AS games,
+      SUM(l.win::int)::int AS wins,
+      ROUND(100.0 * SUM(l.win::int)::numeric / count(*), 2) AS winrate,
+      ROUND(100.0 * count(*)::numeric / NULLIF(c.total, 0), 2) AS pick_rate
+    FROM legendary l
+    JOIN counts c ON c.champion_id = l.champion_id AND c.role = l.role
+    GROUP BY l.champion_id, l.role, l.item_id, c.total
+    HAVING count(*) >= 5
+    ORDER BY l.champion_id, l.role, count(*) DESC
+  `);
+  log.info("CHAMP_SNAP", `Item data: ${allItems.length} rows in ${Date.now() - t0}ms`);
+
+  // Build item lookup: key = "champId:role" → items array
+  const itemMap = new Map<string, any[]>();
+  for (const row of allItems) {
+    const key = `${row.champion_id}:${row.role}`;
+    if (!itemMap.has(key)) itemMap.set(key, []);
+    const arr = itemMap.get(key)!;
+    if (arr.length < 12) { // limit 12 per combo
+      arr.push({
+        item_id: row.item_id,
+        games: row.games,
+        wins: row.wins,
+        winrate: Number(row.winrate),
+        pick_rate: Number(row.pick_rate),
+      });
+    }
+  }
+  log.info("CHAMP_SNAP", `Item map: ${itemMap.size} champion/role combos`);
+
+  // ── Step 2: Get all champion/role combos ──
+  const { rows: combos } = await client.query(`
+    SELECT DISTINCT champion_id, role
+    FROM participants
+    WHERE role IS NOT NULL AND role != '' AND role != 'Invalid'
+    GROUP BY champion_id, role
+    HAVING count(*) >= 50
+    ORDER BY champion_id, role
+  `);
+  log.info("CHAMP_SNAP", `Found ${combos.length} champion/role combos`);
+
+  // ── Step 3: Base snapshots (from materialized views + pre-computed items) ──
+  log.info("CHAMP_SNAP", "=== Base snapshots ===");
   let success = 0;
   let failed = 0;
 
-  // For the base (no tier filter), use the fast get_champion_stats RPC (materialized views)
-  log.info("CHAMP_SNAP", "=== Base snapshots (all tiers, from materialized views) ===");
   for (let i = 0; i < combos.length; i++) {
     const { champion_id, role } = combos[i];
     try {
-      // Fetch stats + items in parallel
-      const [statsRes, itemsRes] = await Promise.all([
-        client.query("SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data", [champion_id, role]),
-        client.query("SELECT * FROM champion_item_stats($1, $2, NULL, 12)", [champion_id, role]),
-      ]);
-      const data = statsRes.rows[0]?.data;
+      const { rows } = await client.query(
+        "SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data",
+        [champion_id, role]
+      );
+      const data = rows[0]?.data;
       if (data) {
-        data.items = itemsRes.rows.map((r: any) => ({
-          item_id: r.item_id,
-          games: Number(r.total_games),
-          wins: Number(r.wins),
-          winrate: Number(r.winrate),
-          pick_rate: Number(r.pick_rate),
-        }));
+        // Attach pre-computed items
+        data.items = itemMap.get(`${champion_id}:${role}`) ?? [];
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
@@ -83,15 +129,16 @@ async function main() {
   }
   log.info("CHAMP_SNAP", `Base done: ${success} ok, ${failed} failed`);
 
-  // For tier-filtered snapshots, compute core stats only (fast query, no matchup joins)
-  log.info("CHAMP_SNAP", "=== Tier-filtered snapshots (core stats only) ===");
+  // ── Step 4: Tier-filtered snapshots ──
+  log.info("CHAMP_SNAP", "=== Tier-filtered snapshots ===");
   const tierFilters = TIER_FILTERS.filter(t => t !== null) as string[];
   let tierSuccess = 0;
   let tierFailed = 0;
 
   for (const tier of tierFilters) {
-    const t0 = Date.now();
-    // Get tier puuids once
+    const t1 = Date.now();
+
+    // Get puuids for this tier
     const { rows: tierPuuids } = await client.query(
       `SELECT array_agg(puuid) as puuids FROM users WHERE split_part(rank, ' ', 1) = ANY(tier_filter_ranks($1))`,
       [tier]
@@ -102,9 +149,7 @@ async function main() {
       continue;
     }
 
-    log.info("CHAMP_SNAP", `Tier ${tier}: ${puuids.length} players`);
-
-    // Batch compute core stats for all champ/role combos in this tier
+    // Batch compute core stats
     const { rows: tierStats } = await client.query(`
       SELECT champion_id, role,
         count(*)::int AS games,
@@ -122,35 +167,68 @@ async function main() {
       HAVING count(*) >= 10
     `, [puuids]);
 
-    log.info("CHAMP_SNAP", `Tier ${tier}: ${tierStats.length} combos computed in ${Date.now() - t0}ms`);
+    // Batch compute items for this tier
+    const { rows: tierItems } = await client.query(`
+      WITH all_items AS (
+        SELECT p.champion_id, p.role,
+          unnest(ARRAY[p.item0, p.item1, p.item2, p.item3, p.item4, p.item5]) AS iid,
+          p.win
+        FROM participants p
+        WHERE p.puuid = ANY($1)
+          AND p.role IS NOT NULL AND p.role != '' AND p.role != 'Invalid'
+      ),
+      counts AS (
+        SELECT champion_id, role, count(*) AS total
+        FROM participants
+        WHERE puuid = ANY($1) AND role IS NOT NULL AND role != '' AND role != 'Invalid'
+        GROUP BY champion_id, role
+      ),
+      legendary AS (
+        SELECT ai.champion_id, ai.role, ai.iid AS item_id, ai.win
+        FROM all_items ai JOIN items i ON i.item_id = ai.iid
+        WHERE i.is_legendary = true
+      )
+      SELECT l.champion_id, l.role, l.item_id,
+        count(*)::int AS games, SUM(l.win::int)::int AS wins,
+        ROUND(100.0 * SUM(l.win::int)::numeric / count(*), 2) AS winrate,
+        ROUND(100.0 * count(*)::numeric / NULLIF(c.total, 0), 2) AS pick_rate
+      FROM legendary l
+      JOIN counts c ON c.champion_id = l.champion_id AND c.role = l.role
+      GROUP BY l.champion_id, l.role, l.item_id, c.total
+      HAVING count(*) >= 3
+      ORDER BY l.champion_id, l.role, count(*) DESC
+    `, [puuids]);
 
-    // Build tier snapshots with items
+    // Build tier item map
+    const tierItemMap = new Map<string, any[]>();
+    for (const row of tierItems) {
+      const key = `${row.champion_id}:${row.role}`;
+      if (!tierItemMap.has(key)) tierItemMap.set(key, []);
+      const arr = tierItemMap.get(key)!;
+      if (arr.length < 12) {
+        arr.push({
+          item_id: row.item_id, games: row.games, wins: row.wins,
+          winrate: Number(row.winrate), pick_rate: Number(row.pick_rate),
+        });
+      }
+    }
+
+    log.info("CHAMP_SNAP", `Tier ${tier}: ${tierStats.length} combos, ${tierItems.length} item rows in ${Date.now() - t1}ms`);
+
     for (const stat of tierStats) {
       try {
-        // Get base snapshot (for matchup data) and tier-specific items in parallel
-        const [baseSnapRes, itemsRes] = await Promise.all([
-          client.query(
-            `SELECT data FROM champion_stats_snapshots
-             WHERE champion_id = $1 AND role = $2 AND snapshot_date = $3 AND tier IS NULL`,
-            [stat.champion_id, stat.role, today]
-          ),
-          client.query(
-            "SELECT * FROM champion_item_stats($1, $2, $3, 12)",
-            [stat.champion_id, stat.role, tier]
-          ),
-        ]);
-        const baseData = baseSnapRes.rows[0]?.data;
+        const baseSnap = await client.query(
+          `SELECT data FROM champion_stats_snapshots WHERE champion_id = $1 AND role = $2 AND snapshot_date = $3 AND tier IS NULL`,
+          [stat.champion_id, stat.role, today]
+        );
+        const baseData = baseSnap.rows[0]?.data;
 
         const data = {
           core: {
-            winrate: Number(stat.winrate),
-            pickrate: null,
-            banrate: null,
+            winrate: Number(stat.winrate), pickrate: null, banrate: null,
             gamesAnalyzed: stat.games,
             avgKDA: { kills: Number(stat.avg_kills), deaths: Number(stat.avg_deaths), assists: Number(stat.avg_assists) },
-            avgCS: null,
-            avgGold: Number(stat.avg_gold),
-            avgDamage: Number(stat.avg_dmg),
+            avgCS: null, avgGold: Number(stat.avg_gold), avgDamage: Number(stat.avg_dmg),
           },
           bestMatchups: baseData?.bestMatchups ?? [],
           worstMatchups: baseData?.worstMatchups ?? [],
@@ -158,35 +236,24 @@ async function main() {
           worstCounters: baseData?.worstCounters ?? [],
           objectiveWinrates: baseData?.objectiveWinrates ?? { firstDragon: null, firstBaron: null },
           gamePhaseWinrates: baseData?.gamePhaseWinrates ?? [],
-          items: itemsRes.rows.map((r: any) => ({
-            item_id: r.item_id,
-            games: Number(r.total_games),
-            wins: Number(r.wins),
-            winrate: Number(r.winrate),
-            pick_rate: Number(r.pick_rate),
-          })),
+          items: tierItemMap.get(`${stat.champion_id}:${stat.role}`) ?? [],
           meta: { queueId: 420, role: stat.role, tier, lastUpdatedUtc: new Date().toISOString() },
         };
 
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT DO NOTHING`,
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
           [stat.champion_id, stat.role, today, tier, JSON.stringify(data)]
         );
         tierSuccess++;
-      } catch {
-        tierFailed++;
-      }
+      } catch { tierFailed++; }
     }
   }
 
   log.info("CHAMP_SNAP", `Tier snapshots: ${tierSuccess} ok, ${tierFailed} failed`);
-
   client.release();
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   log.info("CHAMP_SNAP", `Total: ${success + tierSuccess} snapshots in ${elapsed}s`);
-
   await pool.end();
 }
 
