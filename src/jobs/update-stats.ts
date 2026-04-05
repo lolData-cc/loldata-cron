@@ -141,6 +141,19 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
     queue_id: info.queueId ?? null,
   };
 
+  // Extract dragon soul info from teams
+  let dragonSoulType: string | null = null;
+  let dragonSoulTeamId: number | null = null;
+  for (const t of info.teams ?? []) {
+    // Riot API: if a team got 4+ dragons, they got the soul
+    const dragonKills = t.objectives?.dragon?.kills ?? 0;
+    if (dragonKills >= 4) {
+      dragonSoulTeamId = t.teamId;
+      // The soul type is in the timeline events, but we can check objectives
+      // Riot doesn't expose soul type directly in match DTO — we extract from timeline later
+    }
+  }
+
   const teamRows = (info.teams ?? []).map((t: any) => ({
     match_id: matchId,
     team_id: t.teamId,
@@ -239,9 +252,104 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
       : Promise.resolve(null),
   ];
 
-  // DB writes only — timeline skipped for faster backfill
-  // TODO: Add timeline pass later for early game stats (gold_at_10, cs_at_10, etc.)
   await Promise.all(dbOps);
+
+  // ── Timeline ingestion (item events + early game stats + dragon soul) ──
+  try {
+    const matchRegion = platformToRegion(derivePlatform(matchId)) as Region | null;
+    if (matchRegion) {
+      const timeline = await getMatchTimeline(matchId, matchRegion);
+      if (timeline?.info?.frames) {
+        // 1. Extract item purchase events
+        const itemEvents: any[] = [];
+        for (const frame of timeline.info.frames) {
+          for (const event of frame.events ?? []) {
+            if (event.type === "ITEM_PURCHASED" && event.itemId) {
+              const participant = partRows.find((p: any) => p.participant_id === event.participantId);
+              itemEvents.push({
+                match_id: matchId,
+                participant_id: event.participantId,
+                puuid: participant?.puuid ?? null,
+                ts_ms: event.timestamp,
+                event_type: "PURCHASE",
+                item_id: event.itemId,
+                gold: null,
+              });
+            }
+          }
+        }
+
+        if (itemEvents.length > 0) {
+          // Check if this match already has item events (avoid duplicates)
+          const { count } = await supabase.from("participant_item_events")
+            .select("*", { count: "exact", head: true })
+            .eq("match_id", matchId)
+            .limit(1);
+
+          if (!count || count === 0) {
+            // Batch insert in chunks of 500
+            for (let i = 0; i < itemEvents.length; i += 500) {
+              const batch = itemEvents.slice(i, i + 500);
+              const { error } = await supabase.from("participant_item_events").insert(batch);
+              if (error) log.warn("TIMELINE", `Item events insert error: ${error.message?.slice(0, 100)}`);
+            }
+          }
+        }
+
+        // 2. Extract early game stats
+        const earlyStats = extractEarlyGameStats(timeline, partRows.map((p: any) => p.participant_id));
+        if (Object.keys(earlyStats).length > 0) {
+          const earlyUpdates = Object.entries(earlyStats).map(([pidStr, stats]) => {
+            const pid = Number(pidStr);
+            return supabase.from("participants")
+              .update({
+                gold_at_10: stats.gold_at_10,
+                cs_at_10: stats.cs_at_10,
+                xp_at_10: stats.xp_at_10,
+                kills_at_10: stats.kills_at_10,
+                deaths_at_10: stats.deaths_at_10,
+                assists_at_10: stats.assists_at_10,
+              })
+              .eq("match_id", matchId)
+              .eq("participant_id", pid);
+          });
+          await Promise.all(earlyUpdates);
+        }
+
+        // 3. Extract dragon soul type from timeline events
+        for (const frame of timeline.info.frames) {
+          for (const event of frame.events ?? []) {
+            if (event.type === "ELITE_MONSTER_KILL" && event.monsterType === "DRAGON" && event.monsterSubType) {
+              // Track dragon types — the 4th dragon kill gives the soul
+              const subType = event.monsterSubType as string;
+              if (subType.includes("ELDER")) continue;
+              // Map Riot's dragon subtypes to soul names
+              const soulMap: Record<string, string> = {
+                "FIRE_DRAGON": "Infernal",
+                "WATER_DRAGON": "Ocean",
+                "EARTH_DRAGON": "Mountain",
+                "AIR_DRAGON": "Cloud",
+                "HEXTECH_DRAGON": "Hextech",
+                "CHEMTECH_DRAGON": "Chemtech",
+              };
+              const soulName = soulMap[subType];
+              if (soulName && dragonSoulTeamId) {
+                // Update match_teams with soul type
+                await supabase.from("match_teams")
+                  .update({ dragon_soul: soulName, dragon_soul_team_id: dragonSoulTeamId })
+                  .eq("match_id", matchId)
+                  .eq("team_id", dragonSoulTeamId);
+                break; // Only need the soul type once
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (timelineErr: any) {
+    // Timeline ingestion is non-critical — don't fail the match
+    log.warn("TIMELINE", `Timeline ingestion failed for ${matchId}: ${timelineErr?.message?.slice(0, 100)}`);
+  }
 }
 
 function queuesFor(group: string): number[] {
