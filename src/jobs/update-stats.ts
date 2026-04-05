@@ -444,17 +444,27 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
   // Use the cached region (might differ from DB if fallback was used)
   const matchRegion = getCachedRegion(puuid) ?? region;
 
-  // Process from older -> newer for stability
+  // Process matches in parallel batches of 5 for speed
+  const MATCH_BATCH = 5;
   let processed = 0;
-  for (const matchId of newIds.reverse()) {
-    const match = await getMatchDetails(matchId, matchRegion);
-    if (!match) continue;
+  const sortedNewIds = newIds.reverse();
 
-    const queueId = match.info?.queueId;
-    if (!queues.includes(queueId)) continue;
+  for (let b = 0; b < sortedNewIds.length; b += MATCH_BATCH) {
+    const batch = sortedNewIds.slice(b, b + MATCH_BATCH);
+    const matchResults = await Promise.all(
+      batch.map(async (matchId) => {
+        const match = await getMatchDetails(matchId, matchRegion);
+        if (!match) return null;
+        const queueId = match.info?.queueId;
+        if (!queues.includes(queueId)) return null;
+        await ingestMatch(match, matchRegion);
+        return { matchId, match };
+      })
+    );
 
-    // Ingest into matches/participants/teams + early game stats
-    await ingestMatch(match, matchRegion);
+    for (const result of matchResults) {
+      if (!result) continue;
+      const { matchId, match } = result;
 
     const me = match.info.participants?.find((p: any) => p.puuid === puuid);
     if (!me) continue;
@@ -547,7 +557,8 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
       }
     }
 
-    processed++;
+      processed++;
+    }
   }
 
   // Mark completed
