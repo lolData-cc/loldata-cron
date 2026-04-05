@@ -33,6 +33,24 @@ async function main() {
   // Delete today's old snapshots
   await client.query("DELETE FROM champion_stats_snapshots WHERE snapshot_date = $1", [today]);
 
+  // ── Step 0: Refresh materialized views ──
+  log.info("CHAMP_SNAP", "Refreshing mv_lane_opponents...");
+  try {
+    const rv0 = Date.now();
+    await client.query("REFRESH MATERIALIZED VIEW mv_lane_opponents");
+    log.info("CHAMP_SNAP", `mv_lane_opponents refreshed in ${((Date.now() - rv0) / 1000).toFixed(1)}s`);
+  } catch (e: any) {
+    log.warn("CHAMP_SNAP", `Failed to refresh mv_lane_opponents: ${e.message?.slice(0, 100)}`);
+  }
+
+  try {
+    const rv1 = Date.now();
+    await client.query("REFRESH MATERIALIZED VIEW participant_legendary_purchases");
+    log.info("CHAMP_SNAP", `participant_legendary_purchases refreshed in ${((Date.now() - rv1) / 1000).toFixed(1)}s`);
+  } catch (e: any) {
+    log.warn("CHAMP_SNAP", `Failed to refresh participant_legendary_purchases: ${e.message?.slice(0, 100)}`);
+  }
+
   // ── Step 1: Pre-compute ALL item data in one bulk query ──
   log.info("CHAMP_SNAP", "Pre-computing item data for all champions...");
   const t0 = Date.now();
@@ -106,14 +124,23 @@ async function main() {
   for (let i = 0; i < combos.length; i++) {
     const { champion_id, role } = combos[i];
     try {
-      const { rows } = await client.query(
-        "SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data",
-        [champion_id, role]
-      );
-      const data = rows[0]?.data;
+      // Fetch stats + runes in parallel
+      const [statsRes, runesRes] = await Promise.all([
+        client.query("SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data", [champion_id, role]),
+        client.query("SELECT * FROM champion_rune_stats($1, $2, NULL, 8)", [champion_id, role]),
+      ]);
+      const data = statsRes.rows[0]?.data;
       if (data) {
-        // Attach pre-computed items
         data.items = itemMap.get(`${champion_id}:${role}`) ?? [];
+        data.runes = runesRes.rows.map((r: any) => ({
+          perk_keystone: r.perk_keystone,
+          perk_primary_style: r.perk_primary_style,
+          perk_sub_style: r.perk_sub_style,
+          games: Number(r.games),
+          wins: Number(r.wins),
+          winrate: Number(r.winrate),
+          pick_rate: Number(r.pick_rate),
+        }));
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
