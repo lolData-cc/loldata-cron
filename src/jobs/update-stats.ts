@@ -261,94 +261,87 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
   // ── Timeline ingestion (item events + early game stats + dragon soul) ──
   try {
     if (timeline?.info?.frames) {
-        // 1. Extract item purchase events
-        const itemEvents: any[] = [];
-        for (const frame of timeline.info.frames) {
-          for (const event of frame.events ?? []) {
-            if (event.type === "ITEM_PURCHASED" && event.itemId) {
-              const participant = partRows.find((p: any) => p.participant_id === event.participantId);
-              itemEvents.push({
-                match_id: matchId,
-                participant_id: event.participantId,
-                puuid: participant?.puuid ?? null,
-                ts_ms: event.timestamp,
-                event_type: "PURCHASE",
-                item_id: event.itemId,
-                gold: null,
-              });
-            }
+      // 1. Extract item purchase events
+      const itemEvents: any[] = [];
+      for (const frame of timeline.info.frames) {
+        for (const event of frame.events ?? []) {
+          if (event.type === "ITEM_PURCHASED" && event.itemId) {
+            const participant = partRows.find((p: any) => p.participant_id === event.participantId);
+            itemEvents.push({
+              match_id: matchId,
+              participant_id: event.participantId,
+              puuid: participant?.puuid ?? null,
+              ts_ms: event.timestamp,
+              event_type: "PURCHASE",
+              item_id: event.itemId,
+              gold: null,
+            });
           }
         }
+      }
 
-        if (itemEvents.length > 0) {
-          // Check if this match already has item events (avoid duplicates)
-          const { count } = await supabase.from("participant_item_events")
-            .select("*", { count: "exact", head: true })
+      if (itemEvents.length > 0) {
+        const { count } = await supabase.from("participant_item_events")
+          .select("*", { count: "exact", head: true })
+          .eq("match_id", matchId)
+          .limit(1);
+
+        if (!count || count === 0) {
+          for (let i = 0; i < itemEvents.length; i += 500) {
+            const batch = itemEvents.slice(i, i + 500);
+            const { error } = await supabase.from("participant_item_events").insert(batch);
+            if (error) log.warn("TIMELINE", `Item events insert error: ${error.message?.slice(0, 100)}`);
+          }
+        }
+      }
+
+      // 2. Extract early game stats
+      const earlyStats = extractEarlyGameStats(timeline, partRows.map((p: any) => p.participant_id));
+      if (Object.keys(earlyStats).length > 0) {
+        const earlyUpdates = Object.entries(earlyStats).map(([pidStr, stats]) => {
+          const pid = Number(pidStr);
+          return supabase.from("participants")
+            .update({
+              gold_at_10: stats.gold_at_10,
+              cs_at_10: stats.cs_at_10,
+              xp_at_10: stats.xp_at_10,
+              kills_at_10: stats.kills_at_10,
+              deaths_at_10: stats.deaths_at_10,
+              assists_at_10: stats.assists_at_10,
+            })
             .eq("match_id", matchId)
-            .limit(1);
+            .eq("participant_id", pid);
+        });
+        await Promise.all(earlyUpdates);
+      }
 
-          if (!count || count === 0) {
-            // Batch insert in chunks of 500
-            for (let i = 0; i < itemEvents.length; i += 500) {
-              const batch = itemEvents.slice(i, i + 500);
-              const { error } = await supabase.from("participant_item_events").insert(batch);
-              if (error) log.warn("TIMELINE", `Item events insert error: ${error.message?.slice(0, 100)}`);
-            }
-          }
-        }
-
-        // 2. Extract early game stats
-        const earlyStats = extractEarlyGameStats(timeline, partRows.map((p: any) => p.participant_id));
-        if (Object.keys(earlyStats).length > 0) {
-          const earlyUpdates = Object.entries(earlyStats).map(([pidStr, stats]) => {
-            const pid = Number(pidStr);
-            return supabase.from("participants")
-              .update({
-                gold_at_10: stats.gold_at_10,
-                cs_at_10: stats.cs_at_10,
-                xp_at_10: stats.xp_at_10,
-                kills_at_10: stats.kills_at_10,
-                deaths_at_10: stats.deaths_at_10,
-                assists_at_10: stats.assists_at_10,
-              })
-              .eq("match_id", matchId)
-              .eq("participant_id", pid);
-          });
-          await Promise.all(earlyUpdates);
-        }
-
-        // 3. Extract dragon soul type from timeline events
-        for (const frame of timeline.info.frames) {
-          for (const event of frame.events ?? []) {
-            if (event.type === "ELITE_MONSTER_KILL" && event.monsterType === "DRAGON" && event.monsterSubType) {
-              // Track dragon types — the 4th dragon kill gives the soul
-              const subType = event.monsterSubType as string;
-              if (subType.includes("ELDER")) continue;
-              // Map Riot's dragon subtypes to soul names
-              const soulMap: Record<string, string> = {
-                "FIRE_DRAGON": "Infernal",
-                "WATER_DRAGON": "Ocean",
-                "EARTH_DRAGON": "Mountain",
-                "AIR_DRAGON": "Cloud",
-                "HEXTECH_DRAGON": "Hextech",
-                "CHEMTECH_DRAGON": "Chemtech",
-              };
-              const soulName = soulMap[subType];
-              if (soulName && dragonSoulTeamId) {
-                // Update match_teams with soul type
-                await supabase.from("match_teams")
-                  .update({ dragon_soul: soulName, dragon_soul_team_id: dragonSoulTeamId })
-                  .eq("match_id", matchId)
-                  .eq("team_id", dragonSoulTeamId);
-                break; // Only need the soul type once
-              }
+      // 3. Extract dragon soul type from timeline events
+      for (const frame of timeline.info.frames) {
+        for (const event of frame.events ?? []) {
+          if (event.type === "ELITE_MONSTER_KILL" && event.monsterType === "DRAGON" && event.monsterSubType) {
+            const subType = event.monsterSubType as string;
+            if (subType.includes("ELDER")) continue;
+            const soulMap: Record<string, string> = {
+              "FIRE_DRAGON": "Infernal",
+              "WATER_DRAGON": "Ocean",
+              "EARTH_DRAGON": "Mountain",
+              "AIR_DRAGON": "Cloud",
+              "HEXTECH_DRAGON": "Hextech",
+              "CHEMTECH_DRAGON": "Chemtech",
+            };
+            const soulName = soulMap[subType];
+            if (soulName && dragonSoulTeamId) {
+              await supabase.from("match_teams")
+                .update({ dragon_soul: soulName, dragon_soul_team_id: dragonSoulTeamId })
+                .eq("match_id", matchId)
+                .eq("team_id", dragonSoulTeamId);
+              break;
             }
           }
         }
       }
     }
   } catch (timelineErr: any) {
-    // Timeline ingestion is non-critical — don't fail the match
     log.warn("TIMELINE", `Timeline ingestion failed for ${matchId}: ${timelineErr?.message?.slice(0, 100)}`);
   }
 }
