@@ -7,12 +7,12 @@ export const SEASON_END_EPOCH = process.env.SEASON_END_EPOCH
   ? Number(process.env.SEASON_END_EPOCH)
   : undefined;
 
-// Rate limits (with safety margin)
-export const RIOT_LIMIT_10S = Number(process.env.RIOT_LIMIT_10S ?? 490);
-export const RIOT_LIMIT_10MIN = Number(process.env.RIOT_LIMIT_10MIN ?? 29000);
+// Rate limits (with safety margin — production key: 2000/10s per endpoint)
+export const RIOT_LIMIT_10S = Number(process.env.RIOT_LIMIT_10S ?? 1800);
+export const RIOT_LIMIT_10MIN = Number(process.env.RIOT_LIMIT_10MIN ?? 100000);
 
 // Concurrency for parallel player resolution
-export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 10);
+export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 50);
 
 // Regions to actively ingest (EUW only for now)
 export const REGIONS = ["EUW"] as const;

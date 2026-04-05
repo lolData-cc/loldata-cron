@@ -239,6 +239,10 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
 
   // ── Fire ALL DB writes + timeline fetch in parallel ──
 
+  // ── Fire DB writes + timeline fetch ALL in parallel ──
+  const matchRegion = platformToRegion(derivePlatform(matchId)) as Region | null;
+  const timelinePromise = matchRegion ? getMatchTimeline(matchId, matchRegion).catch(() => null) : Promise.resolve(null);
+
   const dbOps: Promise<any>[] = [
     supabase.from("matches").upsert(matchRow, { onConflict: "match_id" }),
     teamRows.length > 0
@@ -252,14 +256,11 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
       : Promise.resolve(null),
   ];
 
-  await Promise.all(dbOps);
+  const [, , , , timeline] = await Promise.all([...dbOps, timelinePromise]);
 
   // ── Timeline ingestion (item events + early game stats + dragon soul) ──
   try {
-    const matchRegion = platformToRegion(derivePlatform(matchId)) as Region | null;
-    if (matchRegion) {
-      const timeline = await getMatchTimeline(matchId, matchRegion);
-      if (timeline?.info?.frames) {
+    if (timeline?.info?.frames) {
         // 1. Extract item purchase events
         const itemEvents: any[] = [];
         for (const frame of timeline.info.frames) {
