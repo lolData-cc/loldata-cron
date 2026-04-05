@@ -11,8 +11,8 @@ export const SEASON_END_EPOCH = process.env.SEASON_END_EPOCH
 export const RIOT_LIMIT_10S = Number(process.env.RIOT_LIMIT_10S ?? 1800);
 export const RIOT_LIMIT_10MIN = Number(process.env.RIOT_LIMIT_10MIN ?? 100000);
 
-// Concurrency for parallel player resolution
-export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 50);
+// Concurrency for parallel player resolution (limited by Supabase connection pool)
+export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 20);
 
 // Regions to actively ingest (EUW only for now)
 export const REGIONS = ["EUW"] as const;

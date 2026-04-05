@@ -261,11 +261,11 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
   // ── Timeline ingestion (item events + early game stats + dragon soul) ──
   try {
     if (timeline?.info?.frames) {
-      // 1. Extract item purchase events
+      // 1. Extract item purchase events (participantId must be 1-10)
       const itemEvents: any[] = [];
       for (const frame of timeline.info.frames) {
         for (const event of frame.events ?? []) {
-          if (event.type === "ITEM_PURCHASED" && event.itemId) {
+          if (event.type === "ITEM_PURCHASED" && event.itemId && event.participantId >= 1 && event.participantId <= 10) {
             const participant = partRows.find((p: any) => p.participant_id === event.participantId);
             itemEvents.push({
               match_id: matchId,
@@ -281,17 +281,11 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
       }
 
       if (itemEvents.length > 0) {
-        const { count } = await supabase.from("participant_item_events")
-          .select("*", { count: "exact", head: true })
-          .eq("match_id", matchId)
-          .limit(1);
-
-        if (!count || count === 0) {
-          for (let i = 0; i < itemEvents.length; i += 500) {
-            const batch = itemEvents.slice(i, i + 500);
-            const { error } = await supabase.from("participant_item_events").insert(batch);
-            if (error) log.warn("TIMELINE", `Item events insert error: ${error.message?.slice(0, 100)}`);
-          }
+        for (let i = 0; i < itemEvents.length; i += 500) {
+          const batch = itemEvents.slice(i, i + 500);
+          const { error } = await supabase.from("participant_item_events")
+            .upsert(batch, { onConflict: "match_id,participant_id,ts_ms,event_type,item_id", ignoreDuplicates: true });
+          if (error) log.warn("TIMELINE", `Item events upsert error: ${error.message?.slice(0, 100)}`);
         }
       }
 
