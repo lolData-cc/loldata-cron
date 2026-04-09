@@ -256,7 +256,14 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
       : Promise.resolve(null),
   ];
 
-  const [, , , , timeline] = await Promise.all([...dbOps, timelinePromise]);
+  const dbResults = await Promise.all([...dbOps, timelinePromise]);
+  const matchUpsertResult = dbResults[0];
+  const timeline = dbResults[4];
+
+  // Skip timeline if match upsert failed (foreign key would break)
+  if (matchUpsertResult?.error) {
+    return;
+  }
 
   // ── Timeline ingestion (item events + early game stats + dragon soul) ──
   try {
@@ -458,13 +465,13 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
         const queueId = match.info?.queueId;
         if (!queues.includes(queueId)) return null;
         await ingestMatch(match, matchRegion);
-        return { matchId, match };
+        return { matchId, match, queueId };
       })
     );
 
     for (const result of matchResults) {
       if (!result) continue;
-      const { matchId, match } = result;
+      const { matchId, match, queueId } = result;
 
     const me = match.info.participants?.find((p: any) => p.puuid === puuid);
     if (!me) continue;
