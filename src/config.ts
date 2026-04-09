@@ -12,7 +12,7 @@ export const RIOT_LIMIT_10S = Number(process.env.RIOT_LIMIT_10S ?? 1800);
 export const RIOT_LIMIT_10MIN = Number(process.env.RIOT_LIMIT_10MIN ?? 100000);
 
 // Concurrency for parallel player resolution
-export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 30);
+export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 10);
 
 // Regions to actively ingest (EUW only for now)
 export const REGIONS = ["EUW"] as const;

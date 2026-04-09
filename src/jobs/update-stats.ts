@@ -452,7 +452,7 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
   const matchRegion = getCachedRegion(puuid) ?? region;
 
   // Process matches in parallel batches of 5 for speed
-  const MATCH_BATCH = 5;
+  const MATCH_BATCH = 3;
   let processed = 0;
   const sortedNewIds = newIds.reverse();
 
