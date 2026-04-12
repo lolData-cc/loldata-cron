@@ -178,3 +178,5 @@ export async function runIngestEloSeed(): Promise<void> {
     totalBrackets,
   });
 }
+
+runIngestEloSeed().catch(console.error);

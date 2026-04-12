@@ -637,3 +637,6 @@ export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }):
     errors,
   });
 }
+
+// Auto-run when executed directly
+runUpdateSeasonStats().catch(console.error);

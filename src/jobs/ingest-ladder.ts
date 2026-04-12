@@ -144,3 +144,5 @@ export async function runIngestLadder(): Promise<void> {
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
   log.info("JOB_END", `ingest-ladder completed in ${elapsed}min`, { totalResolved });
 }
+
+runIngestLadder().catch(console.error);
