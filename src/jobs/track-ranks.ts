@@ -95,3 +95,5 @@ export async function runTrackRanks(): Promise<void> {
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
   log.info("JOB_END", `track-ranks completed in ${elapsed}min`, { updated, errors });
 }
+
+runTrackRanks().catch(console.error);
