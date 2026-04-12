@@ -19,8 +19,17 @@ export function formatRank(tier: string, division?: string): string {
   return `${tier.toUpperCase()} ${division?.toUpperCase() ?? "IV"}`;
 }
 
-export async function upsertUsers(rows: Record<string, unknown>[]): Promise<void> {
-  const CHUNK = 100;
+// Serialize all user upserts to prevent deadlocks
+let _upsertQueue: Promise<void> = Promise.resolve();
+
+export function upsertUsers(rows: Record<string, unknown>[]): Promise<void> {
+  const task = _upsertQueue.then(() => _doUpsertUsers(rows));
+  _upsertQueue = task.catch(() => {});
+  return task;
+}
+
+async function _doUpsertUsers(rows: Record<string, unknown>[]): Promise<void> {
+  const CHUNK = 50;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
     let retries = 3;
@@ -28,8 +37,7 @@ export async function upsertUsers(rows: Record<string, unknown>[]): Promise<void
       const { error } = await supabase.from("users").upsert(chunk, { onConflict: "puuid" });
       if (!error) break;
       if (error.code === "40P01" && retries > 1) {
-        // Deadlock — wait and retry
-        const delay = (4 - retries) * 1000 + Math.random() * 1000;
+        const delay = (4 - retries) * 2000 + Math.random() * 2000;
         log.warn("DB_UPSERT", `Deadlock at chunk ${i}, retrying in ${Math.round(delay)}ms...`);
         await new Promise(r => setTimeout(r, delay));
         retries--;
