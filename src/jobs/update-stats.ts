@@ -48,6 +48,7 @@ interface EarlyGameStats {
   gold_at_10: number;
   cs_at_10: number;
   xp_at_10: number;
+  damage_at_10: number;
   kills_at_10: number;
   deaths_at_10: number;
   assists_at_10: number;
@@ -85,6 +86,7 @@ function extractEarlyGameStats(
         gold_at_10: pf.totalGold ?? 0,
         cs_at_10: (pf.minionsKilled ?? 0) + (pf.jungleMinionsKilled ?? 0),
         xp_at_10: pf.xp ?? 0,
+        damage_at_10: pf.damageStats?.totalDamageDoneToChampions ?? 0,
         kills_at_10: 0,
         deaths_at_10: 0,
         assists_at_10: 0,
@@ -306,6 +308,7 @@ async function ingestMatch(matchJson: any, region: Region): Promise<void> {
               gold_at_10: stats.gold_at_10,
               cs_at_10: stats.cs_at_10,
               xp_at_10: stats.xp_at_10,
+              damage_at_10: stats.damage_at_10,
               kills_at_10: stats.kills_at_10,
               deaths_at_10: stats.deaths_at_10,
               assists_at_10: stats.assists_at_10,

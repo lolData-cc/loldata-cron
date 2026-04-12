@@ -123,6 +123,7 @@ async function processMatch(matchId: string): Promise<{ items: number; early: bo
             gold_at_10: (pf as any).totalGold ?? null,
             cs_at_10: ((pf as any).minionsKilled ?? 0) + ((pf as any).jungleMinionsKilled ?? 0),
             xp_at_10: (pf as any).xp ?? null,
+            damage_at_10: (pf as any).damageStats?.totalDamageDoneToChampions ?? 0,
             kills_at_10: kda.k,
             deaths_at_10: kda.d,
             assists_at_10: kda.a,
