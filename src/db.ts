@@ -20,15 +20,26 @@ export function formatRank(tier: string, division?: string): string {
 }
 
 export async function upsertUsers(rows: Record<string, unknown>[]): Promise<void> {
-  const CHUNK = 200;
+  const CHUNK = 100;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
-    const { error } = await supabase.from("users").upsert(chunk, { onConflict: "puuid" });
-    if (error) {
-      log.error("DB_UPSERT", `users upsert failed at chunk ${i}`, {
-        code: error.code,
-        message: error.message,
-      });
+    let retries = 3;
+    while (retries > 0) {
+      const { error } = await supabase.from("users").upsert(chunk, { onConflict: "puuid" });
+      if (!error) break;
+      if (error.code === "40P01" && retries > 1) {
+        // Deadlock — wait and retry
+        const delay = (4 - retries) * 1000 + Math.random() * 1000;
+        log.warn("DB_UPSERT", `Deadlock at chunk ${i}, retrying in ${Math.round(delay)}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        retries--;
+      } else {
+        log.error("DB_UPSERT", `users upsert failed at chunk ${i}`, {
+          code: error.code,
+          message: error.message,
+        });
+        break;
+      }
     }
   }
 }
