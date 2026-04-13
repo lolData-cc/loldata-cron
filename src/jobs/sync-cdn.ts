@@ -206,6 +206,18 @@ export async function syncCdn(): Promise<void> {
     await setDeployedVersion(latest);
     log.info("CDN_SYNC", `Marker updated to ${latest}`);
 
+    // 5. Archive old patch data
+    if (deployed) {
+      log.info("CDN_SYNC", `Triggering archive for old patch ${deployed}...`);
+      try {
+        const { archivePatch } = await import("./archive-patch");
+        const oldPatchShort = deployed.split(".").slice(0, 2).join(".");
+        await archivePatch(oldPatchShort);
+      } catch (e: any) {
+        log.warn("CDN_SYNC", `Archive failed (non-fatal): ${e.message?.slice(0, 100)}`);
+      }
+    }
+
     const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
     log.info("CDN_SYNC", `CDN sync completed in ${elapsed}min`);
   } finally {
