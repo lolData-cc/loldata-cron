@@ -41,7 +41,6 @@ export async function archivePatch(patchToArchive?: string): Promise<void> {
       `);
       if (rows.length < 2) {
         log.info("ARCHIVE", "Only one patch in DB, nothing to archive");
-        client.release();
         return;
       }
       patch = rows[1].short_patch;
@@ -55,7 +54,6 @@ export async function archivePatch(patchToArchive?: string): Promise<void> {
     );
     if (existing.length > 0) {
       log.info("ARCHIVE", `Patch ${patch} already archived, skipping`);
-      client.release();
       return;
     }
 
@@ -68,7 +66,6 @@ export async function archivePatch(patchToArchive?: string): Promise<void> {
 
     if (matchCount === 0) {
       log.info("ARCHIVE", "No matches to archive");
-      client.release();
       return;
     }
 
