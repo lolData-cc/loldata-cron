@@ -15,7 +15,7 @@ if (!DATABASE_URL) {
 const pool = new pg.Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 5,
+  max: 12,
   idleTimeoutMillis: 30000,
 });
 
@@ -131,14 +131,14 @@ async function main() {
   log.info("CHAMP_SNAP", "=== Base snapshots ===");
   let success = 0;
   let failed = 0;
+  const PARALLEL = 10;
 
-  for (let i = 0; i < combos.length; i++) {
-    const { champion_id, role } = combos[i];
-    try {
-      // Fetch stats + runes in parallel
+  for (let i = 0; i < combos.length; i += PARALLEL) {
+    const batch = combos.slice(i, i + PARALLEL);
+    const results = await Promise.allSettled(batch.map(async ({ champion_id, role }: any) => {
       const [statsRes, runesRes] = await Promise.all([
-        client.query("SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data", [champion_id, role]),
-        client.query("SELECT * FROM champion_rune_stats($1, $2, NULL, 8)", [champion_id, role]),
+        pool.query("SELECT get_champion_stats($1, $2, NULL, 420, NULL, NULL, NULL) AS data", [champion_id, role]),
+        pool.query("SELECT * FROM champion_rune_stats($1, $2, NULL, 8)", [champion_id, role]),
       ]);
       const data = statsRes.rows[0]?.data;
       if (data) {
@@ -152,18 +152,21 @@ async function main() {
           winrate: Number(r.winrate),
           pick_rate: Number(r.pick_rate),
         }));
-        await client.query(
+        await pool.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
            ON CONFLICT DO NOTHING`,
           [champion_id, role, today, JSON.stringify(data)]
         );
-        success++;
+        return true;
       }
-    } catch {
-      failed++;
+      return false;
+    }));
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) success++;
+      else failed++;
     }
-    if ((i + 1) % 100 === 0) log.info("CHAMP_SNAP", `Base: ${i + 1}/${combos.length}`);
+    if ((i + PARALLEL) % 100 < PARALLEL) log.info("CHAMP_SNAP", `Base: ${Math.min(i + PARALLEL, combos.length)}/${combos.length}`);
   }
   log.info("CHAMP_SNAP", `Base done: ${success} ok, ${failed} failed`);
 
