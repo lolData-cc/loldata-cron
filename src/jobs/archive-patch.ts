@@ -251,35 +251,32 @@ export async function archivePatch(patchToArchive?: string): Promise<void> {
 
 // Archive ALL old patches (everything except the current/latest)
 async function archiveAllOldPatches(): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query(`
-      SELECT SPLIT_PART(game_version, '.', 1) || '.' || SPLIT_PART(game_version, '.', 2) AS patch,
-        count(*) AS matches
-      FROM matches WHERE game_version IS NOT NULL
-      GROUP BY 1 ORDER BY MAX(game_creation) DESC
-    `);
-    client.release();
+  const { rows } = await pool.query(`
+    SELECT SPLIT_PART(game_version, '.', 1) || '.' || SPLIT_PART(game_version, '.', 2) AS patch,
+      count(*) AS matches
+    FROM matches WHERE game_version IS NOT NULL
+    GROUP BY 1 ORDER BY MAX(game_creation) DESC
+  `);
 
-    if (rows.length < 2) {
-      log.info("ARCHIVE", "Only one patch in DB, nothing to archive");
-      return;
-    }
-
-    const currentPatch = rows[0].patch;
-    const oldPatches = rows.slice(1);
-    log.info("ARCHIVE", `Current patch: ${currentPatch}. Archiving ${oldPatches.length} old patches...`);
-
-    for (const { patch, matches } of oldPatches) {
-      log.info("ARCHIVE", `── Archiving ${patch} (${matches} matches) ──`);
-      await archivePatch(patch);
-    }
-
-    log.info("ARCHIVE", `All ${oldPatches.length} old patches archived!`);
-  } catch (e: any) {
-    client.release();
-    throw e;
+  if (rows.length < 2) {
+    log.info("ARCHIVE", "Only one patch in DB, nothing to archive");
+    return;
   }
+
+  const currentPatch = rows[0].patch;
+  const oldPatches = rows.slice(1);
+  log.info("ARCHIVE", `Current patch: ${currentPatch}. Archiving ${oldPatches.length} old patches...`);
+
+  for (const { patch, matches } of oldPatches) {
+    log.info("ARCHIVE", `── Archiving ${patch} (${matches} matches) ──`);
+    try {
+      await archivePatch(patch);
+    } catch (e: any) {
+      log.error("ARCHIVE", `Failed to archive ${patch}: ${e.message?.slice(0, 100)}`);
+    }
+  }
+
+  log.info("ARCHIVE", `All ${oldPatches.length} old patches archived!`);
 }
 
 // Auto-run when executed directly
