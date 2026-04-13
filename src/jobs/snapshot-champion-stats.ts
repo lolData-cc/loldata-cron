@@ -32,8 +32,8 @@ async function main() {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Delete today's old snapshots
-  await client.query("DELETE FROM champion_stats_snapshots WHERE snapshot_date = $1", [today]);
+  // Delete ALL old snapshots (we only keep the latest run)
+  await client.query("DELETE FROM champion_stats_snapshots");
 
   // ── Step 0: Refresh materialized views ──
   const ALL_VIEWS = [
@@ -128,7 +128,7 @@ async function main() {
   log.info("CHAMP_SNAP", "=== Base snapshots ===");
   let success = 0;
   let failed = 0;
-  const PARALLEL = 10;
+  const PARALLEL = 5;
 
   for (let i = 0; i < combos.length; i += PARALLEL) {
     const batch = combos.slice(i, i + PARALLEL);
@@ -152,7 +152,7 @@ async function main() {
         await pool.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
-           ON CONFLICT (champion_id, role, snapshot_date, tier) DO UPDATE SET data = EXCLUDED.data`,
+           ON CONFLICT DO NOTHING`,
           [champion_id, role, today, JSON.stringify(data)]
         );
         return true;
@@ -284,7 +284,7 @@ async function main() {
 
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (champion_id, role, snapshot_date, tier) DO UPDATE SET data = EXCLUDED.data`,
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
           [stat.champion_id, stat.role, today, tier, JSON.stringify(data)]
         );
         tierSuccess++;
