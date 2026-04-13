@@ -51,6 +51,17 @@ async function main() {
     log.warn("CHAMP_SNAP", `Failed to refresh participant_legendary_purchases: ${e.message?.slice(0, 100)}`);
   }
 
+  // Refresh all remaining materialized views
+  for (const mv of ["mv_champion_role_stats", "mv_lane_matchups", "mv_synergies", "mv_game_phases", "mv_objective_winrates"]) {
+    try {
+      const t = Date.now();
+      await client.query(`REFRESH MATERIALIZED VIEW ${mv}`);
+      log.info("CHAMP_SNAP", `${mv} refreshed in ${((Date.now() - t) / 1000).toFixed(1)}s`);
+    } catch (e: any) {
+      log.warn("CHAMP_SNAP", `Failed to refresh ${mv}: ${e.message?.slice(0, 100)}`);
+    }
+  }
+
   // ── Step 1: Pre-compute ALL item data in one bulk query ──
   log.info("CHAMP_SNAP", "Pre-computing item data for all champions...");
   const t0 = Date.now();
