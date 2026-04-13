@@ -17,7 +17,9 @@ const pool = new pg.Pool({
   ssl: { rejectUnauthorized: false },
   max: 12,
   idleTimeoutMillis: 30000,
-});
+  connectionTimeoutMillis: 10000,
+  statement_timeout: 600000,
+} as any);
 
 const TIER_FILTERS = [null, "EMERALD", "EMERALD+", "DIAMOND", "DIAMOND+", "MASTER", "MASTER+", "GRANDMASTER", "CHALLENGER"];
 
@@ -34,33 +36,28 @@ async function main() {
   await client.query("DELETE FROM champion_stats_snapshots WHERE snapshot_date = $1", [today]);
 
   // ── Step 0: Refresh materialized views ──
-  log.info("CHAMP_SNAP", "Refreshing mv_lane_opponents...");
-  try {
-    const rv0 = Date.now();
-    await client.query("REFRESH MATERIALIZED VIEW mv_lane_opponents");
-    log.info("CHAMP_SNAP", `mv_lane_opponents refreshed in ${((Date.now() - rv0) / 1000).toFixed(1)}s`);
-  } catch (e: any) {
-    log.warn("CHAMP_SNAP", `Failed to refresh mv_lane_opponents: ${e.message?.slice(0, 100)}`);
-  }
+  const ALL_VIEWS = [
+    "mv_champion_role_stats",
+    "mv_lane_opponents",
+    "mv_lane_matchups",
+    "mv_synergies",
+    "mv_game_phases",
+    "mv_objective_winrates",
+    "participant_legendary_purchases",
+  ];
 
-  try {
-    const rv1 = Date.now();
-    await client.query("REFRESH MATERIALIZED VIEW participant_legendary_purchases");
-    log.info("CHAMP_SNAP", `participant_legendary_purchases refreshed in ${((Date.now() - rv1) / 1000).toFixed(1)}s`);
-  } catch (e: any) {
-    log.warn("CHAMP_SNAP", `Failed to refresh participant_legendary_purchases: ${e.message?.slice(0, 100)}`);
-  }
-
-  // Refresh all remaining materialized views
-  for (const mv of ["mv_champion_role_stats", "mv_lane_matchups", "mv_synergies", "mv_game_phases", "mv_objective_winrates"]) {
+  for (const mv of ALL_VIEWS) {
     try {
+      log.info("CHAMP_SNAP", `Refreshing ${mv}...`);
       const t = Date.now();
+      await client.query(`SET statement_timeout = '300s'`);
       await client.query(`REFRESH MATERIALIZED VIEW ${mv}`);
       log.info("CHAMP_SNAP", `${mv} refreshed in ${((Date.now() - t) / 1000).toFixed(1)}s`);
     } catch (e: any) {
       log.warn("CHAMP_SNAP", `Failed to refresh ${mv}: ${e.message?.slice(0, 100)}`);
     }
   }
+  await client.query(`SET statement_timeout = '600s'`);
 
   // ── Step 1: Pre-compute ALL item data in one bulk query ──
   log.info("CHAMP_SNAP", "Pre-computing item data for all champions...");
@@ -155,16 +152,20 @@ async function main() {
         await pool.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
            VALUES ($1, $2, $3, NULL, $4)
-           ON CONFLICT DO NOTHING`,
+           ON CONFLICT (champion_id, role, snapshot_date, tier) DO UPDATE SET data = EXCLUDED.data`,
           [champion_id, role, today, JSON.stringify(data)]
         );
         return true;
       }
       return false;
     }));
-    for (const r of results) {
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
       if (r.status === "fulfilled" && r.value) success++;
-      else failed++;
+      else {
+        failed++;
+        if (r.status === "rejected") log.warn("CHAMP_SNAP", `Failed ${batch[j]?.champion_id}/${batch[j]?.role}: ${r.reason?.message?.slice(0, 80)}`);
+      }
     }
     if ((i + PARALLEL) % 100 < PARALLEL) log.info("CHAMP_SNAP", `Base: ${Math.min(i + PARALLEL, combos.length)}/${combos.length}`);
   }
@@ -283,7 +284,7 @@ async function main() {
 
         await client.query(
           `INSERT INTO champion_stats_snapshots (champion_id, role, snapshot_date, tier, data)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (champion_id, role, snapshot_date, tier) DO UPDATE SET data = EXCLUDED.data`,
           [stat.champion_id, stat.role, today, tier, JSON.stringify(data)]
         );
         tierSuccess++;
