@@ -276,9 +276,67 @@ async function archiveAllOldPatches(): Promise<void> {
   log.info("ARCHIVE", `All ${oldPatches.length} old patches archived!`);
 }
 
+// Clean up raw data for already-archived patches
+async function cleanupArchivedPatches(): Promise<void> {
+  const { rows } = await pool.query(`
+    SELECT SPLIT_PART(game_version, '.', 1) || '.' || SPLIT_PART(game_version, '.', 2) AS patch,
+      count(*) AS matches
+    FROM matches WHERE game_version IS NOT NULL
+    GROUP BY 1 ORDER BY MAX(game_creation) DESC
+  `);
+
+  const currentPatch = rows[0]?.patch;
+  const oldPatches = rows.filter((r: any) => r.patch !== currentPatch);
+
+  for (const { patch, matches } of oldPatches) {
+    // Check if archived
+    const { rows: archived } = await pool.query("SELECT 1 FROM patch_archives WHERE patch = $1 LIMIT 1", [patch]);
+    if (archived.length === 0) {
+      log.info("CLEANUP", `${patch} not archived yet, skipping`);
+      continue;
+    }
+
+    log.info("CLEANUP", `Deleting ${matches} leftover matches for archived patch ${patch}...`);
+    const client = await pool.connect();
+    await client.query("SET statement_timeout = '300s'");
+
+    try {
+      // Delete in smaller batches
+      let deleted = 0;
+      while (true) {
+        const { rows: batch } = await client.query(
+          `SELECT match_id FROM matches WHERE game_version LIKE $1 LIMIT 500`, [`${patch}.%`]
+        );
+        if (batch.length === 0) break;
+        const ids = batch.map((r: any) => r.match_id);
+        await client.query(`DELETE FROM participant_item_events WHERE match_id = ANY($1)`, [ids]);
+        await client.query(`DELETE FROM participants WHERE match_id = ANY($1)`, [ids]);
+        await client.query(`DELETE FROM match_teams WHERE match_id = ANY($1)`, [ids]);
+        await client.query(`DELETE FROM season_processed_matches WHERE match_id = ANY($1)`, [ids]);
+        await client.query(`DELETE FROM matches WHERE match_id = ANY($1)`, [ids]);
+        deleted += ids.length;
+        if (deleted % 2000 < 500) log.info("CLEANUP", `${patch}: deleted ${deleted}/${matches}`);
+      }
+      log.info("CLEANUP", `${patch}: done (${deleted} deleted)`);
+    } catch (e: any) {
+      log.error("CLEANUP", `${patch} cleanup failed: ${e.message?.slice(0, 100)}`);
+    } finally {
+      client.release();
+    }
+  }
+  log.info("CLEANUP", "All archived patches cleaned up!");
+}
+
 // Auto-run when executed directly
 const patchArg = process.argv[2];
-const job = patchArg ? archivePatch(patchArg) : archiveAllOldPatches();
+let job: Promise<void>;
+if (patchArg === "cleanup") {
+  job = cleanupArchivedPatches();
+} else if (patchArg) {
+  job = archivePatch(patchArg);
+} else {
+  job = archiveAllOldPatches();
+}
 job.then(() => pool.end()).catch((e) => {
   console.error(e);
   process.exit(1);
