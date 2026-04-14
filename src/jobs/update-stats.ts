@@ -455,7 +455,7 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
   const matchRegion = getCachedRegion(puuid) ?? region;
 
   // Process matches in parallel batches
-  const MATCH_BATCH = 10;
+  const MATCH_BATCH = 8;
   let processed = 0;
   const sortedNewIds = newIds.reverse();
 
@@ -598,7 +598,7 @@ export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }):
   let errors = 0;
   let skippedBad = 0;
 
-  const BATCH = 20; // Process 20 players concurrently
+  const BATCH = 10; // Process 10 players concurrently
 
   for (let i = 0; i < users.length; i += BATCH) {
     const batch = users.slice(i, i + BATCH).filter(({ puuid }) => {
