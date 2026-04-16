@@ -224,14 +224,8 @@ export async function archivePatch(patchToArchive?: string): Promise<void> {
       }
     }
 
-    // Also clean up season_processed_matches for these matches
-    if (ids.length > 0) {
-      const BATCH = 1000;
-      for (let i = 0; i < ids.length; i += BATCH) {
-        const batch = ids.slice(i, i + BATCH);
-        await client.query(`DELETE FROM season_processed_matches WHERE match_id = ANY($1)`, [batch]);
-      }
-    }
+    // NOTE: Do NOT delete from season_processed_matches — keeping these markers
+    // prevents the ingestion from re-fetching archived matches.
 
     const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
     log.info("JOB_END", `archive-patch completed in ${elapsed}min`, {
@@ -312,7 +306,7 @@ async function cleanupArchivedPatches(): Promise<void> {
         await client.query(`DELETE FROM participant_item_events WHERE match_id = ANY($1)`, [ids]);
         await client.query(`DELETE FROM participants WHERE match_id = ANY($1)`, [ids]);
         await client.query(`DELETE FROM match_teams WHERE match_id = ANY($1)`, [ids]);
-        await client.query(`DELETE FROM season_processed_matches WHERE match_id = ANY($1)`, [ids]);
+        // Keep season_processed_matches to prevent re-ingestion
         await client.query(`DELETE FROM matches WHERE match_id = ANY($1)`, [ids]);
         deleted += ids.length;
         if (deleted % 2000 < 500) log.info("CLEANUP", `${patch}: deleted ${deleted}/${matches}`);
