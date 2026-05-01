@@ -588,11 +588,45 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
 
 export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }): Promise<void> {
   const startTime = Date.now();
-  // Always Master+ only now (EUW focus)
   log.info("JOB_START", "update-season-stats started (Master+ EUW only)");
 
-  const users = await getMasterPlusUserPuuids();
-  log.info("SEASON", `Processing ${users.length} Master+ users`);
+  // Fetch ladder from Riot API (sorted by LP, highest first)
+  let ladderPuuids: string[] = [];
+  try {
+    const { getChallenger, getGrandmaster, getMaster } = await import("../riot");
+    const [chall, gm, master] = await Promise.all([
+      getChallenger("RANKED_SOLO_5x5", "EUW" as any),
+      getGrandmaster("RANKED_SOLO_5x5", "EUW" as any),
+      getMaster("RANKED_SOLO_5x5", "EUW" as any),
+    ]);
+    const all = [...chall, ...gm, ...master]
+      .sort((a: any, b: any) => (b.leaguePoints ?? 0) - (a.leaguePoints ?? 0));
+    ladderPuuids = all.map((e: any) => e.puuid).filter(Boolean);
+    log.info("LADDER", `Fetched ${ladderPuuids.length} players from Riot ladder (sorted by LP)`);
+  } catch (e: any) {
+    log.warn("LADDER", `Failed to fetch ladder: ${e.message?.slice(0, 80)}`);
+  }
+
+  // Get all Master+ users from DB
+  const dbUsers = await getMasterPlusUserPuuids();
+
+  // Merge: ladder players first (by LP), then remaining DB users
+  const seen = new Set<string>();
+  const users: { puuid: string; region: string }[] = [];
+  for (const puuid of ladderPuuids) {
+    if (!seen.has(puuid)) {
+      seen.add(puuid);
+      users.push({ puuid, region: "EUW" });
+    }
+  }
+  for (const u of dbUsers) {
+    if (!seen.has(u.puuid)) {
+      seen.add(u.puuid);
+      users.push(u);
+    }
+  }
+
+  log.info("SEASON", `Processing ${users.length} users (ladder-first order)`);
 
   let totalProcessed = 0;
   let errors = 0;

@@ -97,10 +97,11 @@ export async function getMasterPlusUserPuuids(): Promise<{ puuid: string; region
   while (true) {
     const { data, error } = await supabase
       .from("users")
-      .select("puuid, region, rank")
+      .select("puuid, region, rank, lp")
       .not("puuid", "is", null)
       .not("name", "is", null)
       .eq("region", "EUW")
+      .order("lp", { ascending: false, nullsFirst: false })
       .range(offset, offset + PAGE - 1);
 
     if (error) {
