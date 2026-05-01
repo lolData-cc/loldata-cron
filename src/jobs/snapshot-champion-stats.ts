@@ -228,6 +228,49 @@ async function main() {
 
   log.info("CHAMP_SNAP", `Base done: ${success} ok, ${failed} failed`);
 
+  // ── Step 6: Compute top 3 champions per player ──
+  log.info("CHAMP_SNAP", "Computing top champions per player...");
+  const t5 = Date.now();
+  try {
+    await client.query("SET statement_timeout = '300s'");
+    const { rows: topChamps } = await client.query(`
+      WITH ranked AS (
+        SELECT puuid, champion_id, count(*) AS games,
+          SUM(win::int) AS wins,
+          ROW_NUMBER() OVER (PARTITION BY puuid ORDER BY count(*) DESC) AS rn
+        FROM participants
+        WHERE role IS NOT NULL AND role != '' AND role != 'Invalid'
+        GROUP BY puuid, champion_id
+      )
+      SELECT puuid,
+        jsonb_agg(jsonb_build_object(
+          'championId', champion_id,
+          'games', games,
+          'wins', wins
+        ) ORDER BY games DESC) AS top_champs
+      FROM ranked
+      WHERE rn <= 3
+      GROUP BY puuid
+    `);
+    log.info("CHAMP_SNAP", `Top champs computed for ${topChamps.length} players in ${((Date.now() - t5) / 1000).toFixed(1)}s`);
+
+    // Batch update users
+    const BATCH = 500;
+    for (let i = 0; i < topChamps.length; i += BATCH) {
+      const batch = topChamps.slice(i, i + BATCH);
+      const values = batch.map((_: any, j: number) => `($${j * 2 + 1}, $${j * 2 + 2}::jsonb)`).join(",");
+      const params = batch.flatMap((r: any) => [r.puuid, JSON.stringify(r.top_champs)]);
+      await pool.query(
+        `UPDATE users SET top_champions = v.top_champs FROM (VALUES ${values}) AS v(puuid, top_champs) WHERE users.puuid = v.puuid`,
+        params
+      );
+      if ((i + BATCH) % 5000 < BATCH) log.info("CHAMP_SNAP", `Updated top champs: ${Math.min(i + BATCH, topChamps.length)}/${topChamps.length}`);
+    }
+    log.info("CHAMP_SNAP", `Top champions updated for ${topChamps.length} players`);
+  } catch (e: any) {
+    log.warn("CHAMP_SNAP", `Top champions failed: ${e.message?.slice(0, 100)}`);
+  }
+
   client.release();
 
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
