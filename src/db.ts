@@ -126,6 +126,49 @@ export async function getMasterPlusUserPuuids(): Promise<{ puuid: string; region
   return results;
 }
 
+// Users to PROCESS for match ingestion (update-season-stats). Broader than the
+// apex-only rank-tracking set above: defaults to Emerald+ (env PROCESS_TIERS).
+// NB the `.order("lp")` is non-unique → add a `puuid` tiebreaker so .range()
+// pagination doesn't silently skip rows.
+export async function getProcessableUserPuuids(): Promise<{ puuid: string; region: string }[]> {
+  const PROCESS_TIERS = (process.env.PROCESS_TIERS ?? "EMERALD,DIAMOND,MASTER,GRANDMASTER,CHALLENGER")
+    .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const PAGE = 1000;
+  const results: { puuid: string; region: string }[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("users")
+      .select("puuid, region, rank, lp")
+      .not("puuid", "is", null)
+      .not("name", "is", null)
+      .eq("region", "EUW")
+      .order("lp", { ascending: false, nullsFirst: false })
+      .order("puuid", { ascending: true })
+      .range(offset, offset + PAGE - 1);
+
+    if (error) {
+      log.error("DB_QUERY", "Failed to fetch processable puuids", { message: error.message });
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    const valid = data.filter((r) => {
+      if (r.puuid.length < 40) return false;
+      const tier = (r.rank ?? "").split(" ")[0]?.toUpperCase();
+      return PROCESS_TIERS.includes(tier);
+    });
+
+    results.push(...valid.map((r) => ({ puuid: r.puuid, region: r.region })));
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+
+  log.info("DB_FILTER", `Found ${results.length} processable users (${PROCESS_TIERS.join("/")})`);
+  return results;
+}
+
 export async function getUserPeakData(puuid: string): Promise<{
   peak_rank: string | null;
   peak_lp: number | null;

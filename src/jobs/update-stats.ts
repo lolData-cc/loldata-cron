@@ -8,13 +8,13 @@
 import { SEASON_START_EPOCH, SEASON_END_EPOCH, REGIONS, CONCURRENCY } from "../config";
 import type { Region } from "../config";
 import { getMatchIds, getMatchDetails, getMatchTimeline, getCachedRegion, isBadPuuid } from "../riot";
-import { supabase, getMasterPlusUserPuuids, upsertUsers } from "../db";
+import { supabase, getProcessableUserPuuids, upsertUsers } from "../db";
 import { log } from "../logger";
 import { REGION_ROUTING } from "../config";
 
 const Q_SOLO = 420;
 const Q_FLEX = 440;
-const MAX_NEW_MATCHES = 1000; // Full season coverage per player
+const MAX_NEW_MATCHES = Number(process.env.MAX_NEW_MATCHES ?? 1000); // per-player cap; lower it (e.g. 300) to bound disk growth per run while widening the tier net
 
 // ── Match ingestion ─────────────────────────────────────────────────
 
@@ -607,8 +607,8 @@ export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }):
     log.warn("LADDER", `Failed to fetch ladder: ${e.message?.slice(0, 80)}`);
   }
 
-  // Get all Master+ users from DB
-  const dbUsers = await getMasterPlusUserPuuids();
+  // Get all processable (Emerald+, env PROCESS_TIERS) users from DB
+  const dbUsers = await getProcessableUserPuuids();
 
   // Merge: ladder players first (by LP), then remaining DB users
   const seen = new Set<string>();

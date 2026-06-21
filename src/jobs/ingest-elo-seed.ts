@@ -44,8 +44,8 @@ async function fetchBracketEntries(
     collected.push(...entries);
     page++;
 
-    // Safety: cap at 5 pages per bracket (~1025 entries max)
-    if (page > 5) break;
+    // Safety: enough pages to reach maxPlayers (~205 entries/page) + slack.
+    if (page > Math.ceil(maxPlayers / 200) + 3) break;
   }
 
   return collected.slice(0, maxPlayers);

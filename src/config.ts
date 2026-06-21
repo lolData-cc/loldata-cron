@@ -52,6 +52,19 @@ export const DIVISION_ORDER: Record<string, number> = {
   IV: 1, III: 2, II: 3, I: 4,
 };
 
+// ── Sub-apex seeding (ingest-elo-seed) ─────────────────────────
+// Tiers seeded into `users` so update-season-stats ingests their matches.
+// Default "above plat" sample = Emerald + Diamond (apex Master+ comes from
+// ingest-ladder). All env-tunable so we can resize without a redeploy.
+export const SEED_TIERS = (process.env.SEED_TIERS ?? "EMERALD,DIAMOND")
+  .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+export const DIVISIONS = (process.env.SEED_DIVISIONS ?? "I,II,III,IV")
+  .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+// Players sampled per (tier × division × queue) bracket — league-v4 paginates by
+// LP desc, so this takes the top-LP slice of each bracket (a large, representative
+// sample; full coverage adds storage with ~zero statistical gain).
+export const SEED_SAMPLE_PER_BRACKET = Number(process.env.SEED_SAMPLE_PER_BRACKET ?? 1500);
+
 // ── Cloudflare R2 (S3-compatible) ──────────────────────────────
 export const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID!;
 export const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID!;
