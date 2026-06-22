@@ -145,7 +145,6 @@ export async function getProcessableUserPuuids(): Promise<{ puuid: string; regio
       .not("name", "is", null)
       .eq("region", "EUW")
       .order("lp", { ascending: false, nullsFirst: false })
-      .order("puuid", { ascending: true })
       .range(offset, offset + PAGE - 1);
 
     if (error) {
