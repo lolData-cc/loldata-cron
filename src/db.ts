@@ -133,6 +133,11 @@ export async function getMasterPlusUserPuuids(): Promise<{ puuid: string; region
 export async function getProcessableUserPuuids(): Promise<{ puuid: string; region: string }[]> {
   const PROCESS_TIERS = (process.env.PROCESS_TIERS ?? "EMERALD,DIAMOND,MASTER,GRANDMASTER,CHALLENGER")
     .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  // Server-side rank filter — the users table holds ~1.3M match-discovered rows
+  // (mostly rank=NULL); without this we'd paginate ALL of them and filter in JS
+  // (~1300 pages → effectively hangs). `rank` looks like "EMERALD II", so match
+  // by tier prefix. Reduces the scan to the ~tens-of-k seeded/apex users.
+  const orFilter = PROCESS_TIERS.map((t) => `rank.like.${t}*`).join(",");
   const PAGE = 1000;
   const results: { puuid: string; region: string }[] = [];
   let offset = 0;
@@ -144,6 +149,7 @@ export async function getProcessableUserPuuids(): Promise<{ puuid: string; regio
       .not("puuid", "is", null)
       .not("name", "is", null)
       .eq("region", "EUW")
+      .or(orFilter)
       .order("lp", { ascending: false, nullsFirst: false })
       .range(offset, offset + PAGE - 1);
 

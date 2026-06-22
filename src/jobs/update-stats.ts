@@ -676,5 +676,10 @@ export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }):
   });
 }
 
-// Auto-run when executed directly
-runUpdateSeasonStats().catch(console.error);
+// Auto-run ONLY when this file is the direct entry point — NOT when imported.
+// run-matches-only.ts / index.ts import runUpdateSeasonStats and call it
+// themselves; the unguarded auto-run made it execute TWICE in one process →
+// two concurrent passes contending on getProcessableUserPuuids → apparent hang.
+if (import.meta.main) {
+  runUpdateSeasonStats().catch(console.error);
+}
