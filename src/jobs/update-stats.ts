@@ -610,23 +610,27 @@ export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }):
   // Get all processable (Emerald+, env PROCESS_TIERS) users from DB
   const dbUsers = await getProcessableUserPuuids();
 
-  // Merge: ladder players first (by LP), then remaining DB users
+  // Process the DB users FIRST (freshly-seeded Emerald+ have a high new-match yield),
+  // apex ladder LAST (already covered → ~0 new matches → wasted time up front).
+  // SKIP_LADDER_USERS=true drops the apex ladder entirely for a pure sub-apex catch-up.
   const seen = new Set<string>();
   const users: { puuid: string; region: string }[] = [];
-  for (const puuid of ladderPuuids) {
-    if (!seen.has(puuid)) {
-      seen.add(puuid);
-      users.push({ puuid, region: "EUW" });
-    }
-  }
   for (const u of dbUsers) {
     if (!seen.has(u.puuid)) {
       seen.add(u.puuid);
       users.push(u);
     }
   }
+  if (process.env.SKIP_LADDER_USERS !== "true") {
+    for (const puuid of ladderPuuids) {
+      if (!seen.has(puuid)) {
+        seen.add(puuid);
+        users.push({ puuid, region: "EUW" });
+      }
+    }
+  }
 
-  log.info("SEASON", `Processing ${users.length} users (ladder-first order)`);
+  log.info("SEASON", `Processing ${users.length} users (DB/Emerald+-first${process.env.SKIP_LADDER_USERS === "true" ? ", apex skipped" : ""})`);
 
   let totalProcessed = 0;
   let errors = 0;
