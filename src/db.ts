@@ -170,6 +170,35 @@ export async function getProcessableUserPuuids(): Promise<{ puuid: string; regio
     offset += PAGE;
   }
 
+  // ── Discovery backlog ───────────────────────────────────────────────
+  // The ~14.7k Emerald+ seeds above are basically fully ingested (≈1.5M matches
+  // ≈ all their ranked games), so a pass over them yields almost no new matches.
+  // The growth past that lives in the ~1.08M match-discovered EUW users with
+  // rank=NULL that the rank filter skips. Pull a ROTATING, capped batch of them
+  // via claim_discovery_batch() — an atomic select+mark (by last_searched_at) so
+  // each pass takes the next N. Env-gated + reversible: DISCOVERY_BATCH=0
+  // disables it; pace the DB-write/IO load by tuning the batch size.
+  const DISCOVERY_BATCH = Number(process.env.DISCOVERY_BATCH ?? 0);
+  if (DISCOVERY_BATCH > 0) {
+    try {
+      const { data: disc, error: dErr } = await supabase.rpc("claim_discovery_batch", { n: DISCOVERY_BATCH });
+      if (dErr) {
+        log.warn("DB_FILTER", `discovery batch failed: ${dErr.message}`);
+      } else if (Array.isArray(disc) && disc.length > 0) {
+        const before = results.length;
+        const have = new Set(results.map((r) => r.puuid));
+        for (const r of disc as Array<{ puuid: string; region: string }>) {
+          if (r?.puuid && r.puuid.length >= 40 && !have.has(r.puuid)) {
+            results.push({ puuid: r.puuid, region: r.region || "EUW" });
+          }
+        }
+        log.info("DB_FILTER", `+ ${results.length - before} discovery-backlog users (rank=NULL, rotated, batch=${DISCOVERY_BATCH})`);
+      }
+    } catch (e: any) {
+      log.warn("DB_FILTER", `discovery batch threw: ${e?.message ?? e}`);
+    }
+  }
+
   log.info("DB_FILTER", `Found ${results.length} processable users (${PROCESS_TIERS.join("/")})`);
   return results;
 }
