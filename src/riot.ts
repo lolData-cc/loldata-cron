@@ -4,7 +4,22 @@ import type { QueueApi, LadderEntry, RankedEntry, LeagueEntryDTO } from "./types
 import { DualWindowRateLimiter } from "./rate-limiter";
 import { log } from "./logger";
 
-const limiter = new DualWindowRateLimiter(RIOT_LIMIT_10S, 10, RIOT_LIMIT_10MIN, 600);
+// RECONSTRUCTED (2026-10-06) from the box-only edit. Riot's app limits are
+// per routing HOST, so one global limiter throttled europe/americas/asia to a
+// third of what the key allows. One limiter per host, created on first use;
+// RIOT_LIMIT_* are the PER-HOST caps.
+const limiters = new Map<string, DualWindowRateLimiter>();
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return "?"; }
+}
+function limiterForHost(host: string): DualWindowRateLimiter {
+  let l = limiters.get(host);
+  if (!l) {
+    l = new DualWindowRateLimiter(RIOT_LIMIT_10S, 10, RIOT_LIMIT_10MIN, 600);
+    limiters.set(host, l);
+  }
+  return l;
+}
 
 // ── Decrypt error (wrong regional routing for puuid) ────────────────
 
@@ -16,7 +31,7 @@ export class DecryptError extends Error {
 
 async function riotFetch<T>(url: string, retries = 3): Promise<T | null> {
   for (let attempt = 1; attempt <= retries; attempt++) {
-    await limiter.acquire();
+    await limiterForHost(hostOf(url)).acquire();
     try {
       const res = await fetch(url, {
         headers: { "X-Riot-Token": RIOT_API_KEY },

@@ -7,17 +7,26 @@ export const SEASON_END_EPOCH = process.env.SEASON_END_EPOCH
   ? Number(process.env.SEASON_END_EPOCH)
   : undefined;
 
-// Rate limits (with safety margin — production key: 2000/10s per endpoint)
+// Rate limits - PER ROUTING HOST (see riot.ts): each platform host
+// (euw1/eun1/na1/kr) and each regional host (europe/americas/asia) gets its
+// own 500:10s / 30000:10min on a production key. Prod ran 350 / 21000.
 export const RIOT_LIMIT_10S = Number(process.env.RIOT_LIMIT_10S ?? 1800);
 export const RIOT_LIMIT_10MIN = Number(process.env.RIOT_LIMIT_10MIN ?? 100000);
 
 // Concurrency for parallel player resolution
 export const CONCURRENCY = Number(process.env.CRON_CONCURRENCY ?? 10);
 
-// Regions to actively ingest (EUW only for now)
-export const REGIONS = ["EUW"] as const;
-export type Region = "EUW" | "NA" | "KR"; // All supported regions for routing
-export type ActiveRegion = (typeof REGIONS)[number]; // Regions we actively process
+// RECONSTRUCTED (2026-10-06) from the edits that lived only on the Hetzner
+// box (deleted) - see loldata-infra/services/loldata-cron.md. Regions come
+// from INGEST_REGIONS (prod ran "EUW,EUNE,NA,KR"); invalid entries are
+// dropped, an empty list falls back to EUW.
+export type Region = "EUW" | "EUNE" | "NA" | "KR";
+const ALL_REGIONS: Region[] = ["EUW", "EUNE", "NA", "KR"];
+export const REGIONS: Region[] = (process.env.INGEST_REGIONS ?? "EUW")
+  .split(",").map((s) => s.trim().toUpperCase())
+  .filter((r): r is Region => (ALL_REGIONS as string[]).includes(r));
+if (REGIONS.length === 0) REGIONS.push("EUW");
+export type ActiveRegion = Region;
 
 export const QUEUE_SOLO = "RANKED_SOLO_5x5" as const;
 export const QUEUE_FLEX = "RANKED_FLEX_SR" as const;
@@ -30,6 +39,11 @@ export const REGION_ROUTING: Record<
     account: "europe.api.riotgames.com",
     match: "europe.api.riotgames.com",
     platform: "euw1.api.riotgames.com",
+  },
+  EUNE: {
+    account: "europe.api.riotgames.com",
+    match: "europe.api.riotgames.com",
+    platform: "eun1.api.riotgames.com",
   },
   NA: {
     account: "americas.api.riotgames.com",

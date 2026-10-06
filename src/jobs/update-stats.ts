@@ -588,55 +588,68 @@ async function updatePlayerSeasonStats(puuid: string, region: Region): Promise<n
 
 export async function runUpdateSeasonStats(opts?: { masterPlusOnly?: boolean }): Promise<void> {
   const startTime = Date.now();
-  log.info("JOB_START", "update-season-stats started (Master+ EUW only)");
+  log.info("JOB_START", `update-season-stats started (regions: ${REGIONS.join(",")})`);
 
-  // Fetch ladder from Riot API (sorted by LP, highest first)
-  let ladderPuuids: string[] = [];
+  // RECONSTRUCTED (2026-10-06) from the box-only edit. The apex ladder of
+  // EVERY configured region is fetched (each ladder endpoint returns puuids
+  // directly - cheap), then the regions are ROUND-ROBIN interleaved rather
+  // than globally LP-sorted, so a fully-covered EUW ladder cannot starve an
+  // uncrawled KR/NA. Apex goes FIRST, then the DB sub-apex users (EUW-only
+  // Emerald+ seed + the discovery backlog). The Master endpoint caps at
+  // 10,000 entries per region.
+  const perRegion: { puuid: string; region: string }[][] = [];
   try {
     const { getChallenger, getGrandmaster, getMaster } = await import("../riot");
-    const [chall, gm, master] = await Promise.all([
-      getChallenger("RANKED_SOLO_5x5", "EUW" as any),
-      getGrandmaster("RANKED_SOLO_5x5", "EUW" as any),
-      getMaster("RANKED_SOLO_5x5", "EUW" as any),
-    ]);
-    const all = [...chall, ...gm, ...master]
-      .sort((a: any, b: any) => (b.leaguePoints ?? 0) - (a.leaguePoints ?? 0));
-    ladderPuuids = all.map((e: any) => e.puuid).filter(Boolean);
-    log.info("LADDER", `Fetched ${ladderPuuids.length} players from Riot ladder (sorted by LP)`);
+    for (const region of REGIONS) {
+      try {
+        const [chall, gm, master] = await Promise.all([
+          getChallenger("RANKED_SOLO_5x5", region),
+          getGrandmaster("RANKED_SOLO_5x5", region),
+          getMaster("RANKED_SOLO_5x5", region),
+        ]);
+        const all = [...chall, ...gm, ...master]
+          .sort((a: any, b: any) => (b.leaguePoints ?? 0) - (a.leaguePoints ?? 0));
+        const rows = all.map((e: any) => e.puuid).filter(Boolean).map((puuid: string) => ({ puuid, region }));
+        perRegion.push(rows);
+        log.info("LADDER", `${region}: ${chall.length} chall + ${gm.length} gm + ${master.length} master`);
+      } catch (e: any) {
+        log.warn("LADDER", `${region}: failed to fetch ladder: ${e?.message?.slice(0, 80)}`);
+      }
+    }
   } catch (e: any) {
-    log.warn("LADDER", `Failed to fetch ladder: ${e.message?.slice(0, 80)}`);
+    log.warn("LADDER", `Failed to load riot module: ${e?.message?.slice(0, 80)}`);
+  }
+  const ladder: { puuid: string; region: string }[] = [];
+  const longest = perRegion.reduce((m, arr) => Math.max(m, arr.length), 0);
+  for (let i = 0; i < longest; i++) {
+    for (const arr of perRegion) if (arr[i]) ladder.push(arr[i]!);
   }
 
   // Get all processable (Emerald+, env PROCESS_TIERS) users from DB
   const dbUsers = await getProcessableUserPuuids();
 
-  // Process the DB users FIRST (freshly-seeded Emerald+ have a high new-match yield),
-  // apex ladder LAST (already covered → ~0 new matches → wasted time up front).
   // SKIP_LADDER_USERS=true drops the apex ladder entirely for a pure sub-apex catch-up.
   const seen = new Set<string>();
   const users: { puuid: string; region: string }[] = [];
-  for (const u of dbUsers) {
-    if (!seen.has(u.puuid)) {
-      seen.add(u.puuid);
-      users.push(u);
+  if (process.env.SKIP_LADDER_USERS !== "true") {
+    for (const u of ladder) {
+      if (!seen.has(u.puuid)) { seen.add(u.puuid); users.push(u); }
     }
   }
-  if (process.env.SKIP_LADDER_USERS !== "true") {
-    for (const puuid of ladderPuuids) {
-      if (!seen.has(puuid)) {
-        seen.add(puuid);
-        users.push({ puuid, region: "EUW" });
-      }
-    }
+  const apexCount = users.length;
+  for (const u of dbUsers) {
+    if (!seen.has(u.puuid)) { seen.add(u.puuid); users.push(u); }
   }
 
-  log.info("SEASON", `Processing ${users.length} users (DB/Emerald+-first${process.env.SKIP_LADDER_USERS === "true" ? ", apex skipped" : ""})`);
+  log.info("SEASON", `Processing ${users.length} users (apex-first: ${apexCount} apex + ${users.length - apexCount} DB${process.env.SKIP_LADDER_USERS === "true" ? ", apex skipped" : ""})`);
 
   let totalProcessed = 0;
   let errors = 0;
   let skippedBad = 0;
 
-  const BATCH = 10; // Process 10 players concurrently
+  // Prod ran INGEST_BATCH=24; the per-batch Promise.allSettled barrier is the
+  // throughput ceiling (~40% host utilisation) - a sliding worker pool is the next lever.
+  const BATCH = Number(process.env.INGEST_BATCH ?? 10);
 
   for (let i = 0; i < users.length; i += BATCH) {
     const batch = users.slice(i, i + BATCH).filter(({ puuid }) => {
